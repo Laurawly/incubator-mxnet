@@ -102,12 +102,12 @@ class CommCPU : public Comm {
                  const std::vector<NDArray> dst, int priority) override {
     int mask = src.ctx().dev_mask();
     if (mask == Context::kCPU) {
-      for (auto d : dst) CopyFromTo(src, &d, priority);
+      for (auto& d : dst) CopyFromTo(src, &d, priority);
     } else {
       // first copy data to cpu, then broadcast
       auto& buf = merge_buf_[key];
       CopyFromTo(src, &buf.merged, priority);
-      for (auto d : dst) CopyFromTo(buf.merged, &d, priority);
+      for (auto& d : dst) CopyFromTo(buf.merged, &d, priority);
     }
   }
 
@@ -236,56 +236,49 @@ class CommDevice : public Comm {
       }
     }
 
-    // Reduce src on gpu 4~7 to gpu 4 first
     auto& stage = stage_buf_[key];
-    std::vector<NDArray> reduce_s(src.size()/2);
-    if (stage.copy_buf.empty()) {
-      stage.copy_buf.resize(src.size()/2-1);
-      for (size_t i = src.size()/2; i < src.size()-1; ++i) {
-        stage.copy_buf[i%4] = NDArray(
-          stage.merged.shape(), stage.merged.ctx(), false, stage.merged.dtype());
-      }
+    if (stage.merged.shape() != NULL) {
+        std::vector<NDArray> reduce_s(stage.copy_buf.size()+1);
+        for (size_t i = 0, j = 0; i < src.size(); ++i) {
+          int id = src[i].ctx().dev_id;
+          if (id == stage.merged.ctx().dev_id) {
+            CopyFromTo(src[i], &(stage.merged), priority);
+            reduce_s[0] = stage.merged;
+          }
+          else if (id >= 4) {
+              CopyFromTo(src[i], &(stage.copy_buf[j]), priority);
+              reduce_s[j+1] = stage.copy_buf[j];
+              j++;
+          }
+        }
+        ElementwiseSum(reduce_s, &stage.merged);
     }
-    for (size_t i = 0; i < src.size(); ++i) {
-      int id = src[i].ctx().dev_id;
-      if (id == 4) {
-        CopyFromTo(src[i], &(stage.merged), priority);
-        reduce_s[0] = stage.merged;
-      }
-      else if (id > 4) {
-          CopyFromTo(src[i], &(stage.copy_buf[id-5]), priority);
-          reduce_s[id-4] = stage.copy_buf[id-5];
-      }
-    }
-    ElementwiseSum(reduce_s, &stage.merged);
-
     // Main reduce result on gpu 0 including the partial result from gpu 4
     auto& buf = merge_buf_[key];
-    std::vector<NDArray> reduce(src.size()/2+1);
+    if (buf.merged.shape() != NULL) {
+        std::vector<NDArray> reduce(buf.copy_buf.size()+1);
 
-    if (buf.copy_buf.empty()) {
-      buf.copy_buf.resize(src.size()/2);
-      for (size_t i = 0; i < src.size()/2; ++i) {
-        buf.copy_buf[i] = NDArray(
-          buf.merged.shape(), buf.merged.ctx(), false, buf.merged.dtype());
-      }
+        for (size_t i = 0, j = 0; i < src.size(); ++i) {
+          int id = src[i].ctx().dev_id;
+          if (id == buf.merged.ctx().dev_id) {
+            CopyFromTo(src[i], &(buf.merged), priority);
+            reduce[0] = buf.merged;
+          }
+          else if (id < 4) {
+              CopyFromTo(src[i], &(buf.copy_buf[j]), priority);
+              reduce[j+1] = buf.copy_buf[j];
+              j++;
+          }
+        }
+
+        if (stage.merged.shape() != NULL) {
+            CopyFromTo(stage.merged, &(buf.copy_buf[buf.copy_buf.size()-1]), priority);
+            reduce[reduce.size()-1] = buf.copy_buf[buf.copy_buf.size()-1];
+        }
+        ElementwiseSum(reduce, &buf.merged);
+    } else {
+        return stage.merged;
     }
-    for (size_t i = 0; i < src.size(); ++i) {
-      int id = src[i].ctx().dev_id;
-      if (id == 0) {
-        CopyFromTo(src[i], &(buf.merged), priority);
-        reduce[0] = buf.merged;
-      }
-      else if (id < 4) {
-          CopyFromTo(src[i], &(buf.copy_buf[id-1]), priority);
-          reduce[id] = buf.copy_buf[id-1];
-      }
-    }
-
-    CopyFromTo(stage.merged, &(buf.copy_buf[src.size()/2-1]), priority);
-    reduce[src.size()/2] = buf.copy_buf[src.size()/2-1];
-    ElementwiseSum(reduce, &buf.merged);
-
     return buf.merged;
   }
 
@@ -303,8 +296,10 @@ class CommDevice : public Comm {
     } else {
       auto& buf = merge_buf_[key];
       auto& stage = stage_buf_[key];
-      CopyFromTo(src, &buf.merged, priority);
-      CopyFromTo(src, &stage.merged, priority);
+      if(buf.merged.shape() != NULL)
+          CopyFromTo(src, &buf.merged, priority);
+      if(stage.merged.shape() != NULL)
+          CopyFromTo(src, &stage.merged, priority);
       for (auto d : dst) {
         if(d.ctx().dev_id < 4)
             CopyFromTo(buf.merged, &d, priority);
@@ -364,14 +359,49 @@ class CommDevice : public Comm {
               const KeyAttrs& a, const KeyAttrs& b) {
       return std::get<1>(a).Size() > std::get<1>(b).Size();
     });
+    std::vector<Context> g1, g2;
+    for (auto& d : devs){
+        if(d.dev_id < 4) g1.push_back(d);
+        else g2.push_back(d);
+    }
+  int gpu0, gpu1;
+  for (gpu0=0, gpu1=0; gpu0<g1.size() && gpu1<g2.size();){
+    if(g2[gpu1].dev_id-g1[gpu0].dev_id == 4) break;
+    else if(g2[gpu1].dev_id-g1[gpu0].dev_id > 4) gpu0++;
+    else gpu1++;
+  }
+  if(gpu0==g1.size() || gpu1==g2.size()) gpu0=gpu1=0;
     for (size_t i = 0; i < sorted_key_attrs_.size(); ++i) {
       int key  = std::get<0>(sorted_key_attrs_[i]);
       TShape s = std::get<1>(sorted_key_attrs_[i]);
       int type = std::get<2>(sorted_key_attrs_[i]);
       auto& buf = merge_buf_[key];
       auto& stage = stage_buf_[key];
-      buf.merged = NDArray(s, devs[0], false, type);
-      stage.merged = NDArray(s, devs[4], false, type);
+      if (!g1.empty()) {
+          buf.merged = NDArray(s, g1[gpu0], false, type);
+          if(buf.copy_buf.empty()) {
+              if (!g2.empty()) {
+                  buf.copy_buf.resize(g1.size());
+                  for (size_t i = 0; i < g1.size(); ++i)
+                    buf.copy_buf[i] = NDArray(
+                      buf.merged.shape(), buf.merged.ctx(), false, buf.merged.dtype());
+              }else {
+                  buf.copy_buf.resize(g1.size()-1);
+                  for (size_t i = 0; i < g1.size()-1; ++i)
+                    buf.copy_buf[i] = NDArray(
+                      buf.merged.shape(), buf.merged.ctx(), false, buf.merged.dtype());
+              }
+          }
+      }
+      if (!g2.empty()) {
+          stage.merged = NDArray(s, g2[gpu1], false, type);
+          if(stage.copy_buf.empty()) {
+              stage.copy_buf.resize(g2.size()-1);
+              for (size_t i = 0; i < g2.size()-1; ++i)
+                stage.copy_buf[i] = NDArray(
+                  stage.merged.shape(), stage.merged.ctx(), false, stage.merged.dtype());
+          }
+      }
     }
     inited_ = true;
   }
