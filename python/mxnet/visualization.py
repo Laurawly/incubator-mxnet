@@ -1,20 +1,3 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-
 # coding: utf-8
 # pylint: disable=invalid-name, too-many-locals, fixme
 # pylint: disable=too-many-branches, too-many-statements
@@ -134,20 +117,12 @@ def print_summary(symbol, shape=None, line_length=120, positions=[.44, .64, .74,
                             pre_filter = pre_filter + int(shape[0])
         cur_param = 0
         if op == 'Convolution':
-            if ("no_bias" in node["attr"]) and (node["attr"]["no_bias"] == 'True'):
-                cur_param = pre_filter * int(node["attr"]["num_filter"])
-                for k in _str2tuple(node["attr"]["kernel"]):
-                    cur_param *= int(k)
-            else:
-                cur_param = pre_filter * int(node["attr"]["num_filter"])
-                for k in _str2tuple(node["attr"]["kernel"]):
-                    cur_param *= int(k)
-                cur_param += int(node["attr"]["num_filter"])
+            cur_param = pre_filter * int(node["attr"]["num_filter"])
+            for k in _str2tuple(node["attr"]["kernel"]):
+                cur_param *= int(k)
+            cur_param += int(node["attr"]["num_filter"])
         elif op == 'FullyConnected':
-            if ("no_bias" in node["attr"]) and (node["attr"]["no_bias"] == 'True'):
-                cur_param = pre_filter * (int(node["attr"]["num_hidden"]))
-            else:
-                cur_param = (pre_filter+1) * (int(node["attr"]["num_hidden"]))
+            cur_param = pre_filter * (int(node["attr"]["num_hidden"]) + 1)
         elif op == 'BatchNorm':
             key = node["name"] + "_output"
             if show_shape:
@@ -342,6 +317,7 @@ def plot_network(symbol, title="plot", save_format='pdf', shape=None, node_attrs
                                 params = input_node["attr"]
                                 if "num_outputs" in params:
                                     key += str(int(params["num_outputs"]) - 1)
+                                    params["num_outputs"] = int(params["num_outputs"]) - 1
                             shape = shape_dict[key][1:]
                             label = "x".join([str(x) for x in shape])
                             attr["label"] = label

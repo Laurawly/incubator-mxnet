@@ -84,19 +84,17 @@ private[mxnet] object ParameterServer {
   }
 }
 
-class ParameterServer(
-    classpath: String,
-    role: String,
-    rootUri: String,
-    rootPort: Int,
-    numServer: Int = 1,
-    numWorker: Int = 1,
-    timeout: Int = 0,
-    java: String = "java",
-    jvmOpts: String = "") {
-
+class ParameterServer(private val classpath: String,
+                      private val role: String,
+                      private val rootUri: String,
+                      private val rootPort: Int,
+                      private val numServer: Int = 1,
+                      private val numWorker: Int = 1,
+                      private val timeout: Int = 0,
+                      private val java: String = "java",
+                      private val jvmOpts: String = "") {
   private val logger: Logger = LoggerFactory.getLogger(classOf[ParameterServer])
-  private val psProcess: AtomicReference[Process] = new AtomicReference[Process]
+  private val trackerProcess: AtomicReference[Process] = new AtomicReference[Process]
 
   /**
    * A utility class to redirect the child process's stdout or stderr.
@@ -123,38 +121,47 @@ class ParameterServer(
     }
   }
 
-  private def startLoggingThreads(rootUri: String, rootPort: Int): Unit = {
-    val inputStream = psProcess.get().getInputStream
-    val errorStream = psProcess.get().getErrorStream
-    logger.info(s"Starting InputStream-Redirecter Thread for $rootUri:$rootPort")
-    new RedirectThread(inputStream, System.out, "InputStream-Redirecter", true).start()
-    logger.info(s"Starting ErrorStream-Redirecter Thread for $rootUri:$rootPort")
-    new RedirectThread(errorStream, System.err, "ErrorStream-Redirecter", true).start()
-  }
-
-  def startProcess(): Int = {
+  def startProcess(): Boolean = {
     val cp = if (classpath == null) "" else s"-cp $classpath"
     val cmd = s"$java $jvmOpts $cp $runningClass " +
       s"--role=$role --root-uri=$rootUri --root-port=$rootPort " +
       s"--num-server=$numServer --num-worker=$numWorker --timeout=$timeout"
+    logger.info(s"Start process: $cmd")
     try {
       val childProcess = Runtime.getRuntime.exec(cmd)
-      logger.info(s"Started process: $cmd at $rootUri:$rootPort")
-      psProcess.set(childProcess)
-      startLoggingThreads(rootUri, rootPort)
-      psProcess.get().waitFor()
+      trackerProcess.set(childProcess)
+      val inputStream = childProcess.getInputStream
+      val errorStream = childProcess.getErrorStream
+      logger.info("Starting InputStream-Redirecter Thread")
+      new RedirectThread(inputStream, System.out, "InputStream-Redirecter", true).start()
+      logger.info("Starting ErrorStream-Redirecter Thread")
+      new RedirectThread(errorStream, System.err, "ErrorStream-Redirecter", true).start()
+      true
     } catch {
       case ioe: IOException =>
         ioe.printStackTrace()
-        1
-    } finally {
-      stop()
+        false
     }
   }
 
   def stop() {
-    if (psProcess.get != null && psProcess.get().isAlive) {
-      psProcess.get.destroy()
+    if (trackerProcess.get != null) {
+      trackerProcess.get.destroy()
+    }
+  }
+
+  def waitFor(): Int = {
+    try {
+      trackerProcess.get.waitFor()
+      val returnVal: Int = trackerProcess.get.exitValue
+      logger.info("Process ends with exit code " + returnVal)
+      stop()
+      returnVal
+    } catch {
+      case e: InterruptedException =>
+        e.printStackTrace()
+        logger.error("Process terminated unexpectedly")
+        1
     }
   }
 

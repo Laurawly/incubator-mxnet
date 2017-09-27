@@ -1,3 +1,4 @@
+# find protoc
 ifndef PROTOC
 DEPS_PROTOC=../../deps/bin/protoc
 ifneq ("$(wildcard $(DEPS_PROTOC))","")
@@ -7,10 +8,10 @@ PROTOC = protoc
 endif
 endif
 
-all: caffe_pb2.py
+all: caffe_parse/caffe_pb2.py
 
 clean:
-	rm caffe_pb2.py*
+	rm caffe_parse/caffe_pb2.py*
 
-caffe_pb2.py:
-	$(PROTOC) --python_out=./ ./caffe.proto
+caffe_parse/caffe_pb2.py:
+	$(PROTOC) --python_out=./ ./caffe_parse/caffe.proto

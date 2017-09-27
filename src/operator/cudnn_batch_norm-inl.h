@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+ * Copyright (c) 2015 by Contributors
  * \file cudnn_batch_norm-inl.h
  * \brief
  * \author Junyuan Xie
@@ -46,8 +28,8 @@ class CuDNNBatchNormOp : public Operator {
  public:
   explicit CuDNNBatchNormOp(BatchNormParam param) {
     using namespace mshadow;
-    CHECK_GE(param.eps, CUDNN_BN_MIN_EPSILON)
-     << "CuDNN requires eps to be no less than " << CUDNN_BN_MIN_EPSILON;
+    CHECK_GT(param.eps, CUDNN_BN_MIN_EPSILON)
+     << "CuDNN requires eps to be greater than " << CUDNN_BN_MIN_EPSILON;
     this->param_ = param;
     init_cudnn_ = false;
     dtype_ = DataType<DType>::kCudnnFlag;
@@ -112,11 +94,6 @@ class CuDNNBatchNormOp : public Operator {
 
     Tensor<gpu, 4, DType> y =
       out_data[cudnnbatchnorm::kOut].get_with_shape<gpu, 4, DType>(shape_, s);
-#if CUDNN_VERSION >= 7002
-    auto mode = CUDNN_BATCHNORM_SPATIAL_PERSISTENT;
-#else
-    auto mode = CUDNN_BATCHNORM_SPATIAL;
-#endif
 
     MSHADOW_REAL_TYPE_SWITCH(dtype_param_, DTypeParam, {
       Tensor<gpu, 1, DTypeParam> gamma =
@@ -140,8 +117,9 @@ class CuDNNBatchNormOp : public Operator {
         Tensor<gpu, 1, DTypeParam> save_inv_var =
           out_data[cudnnbatchnorm::kInvVar]
           .get_with_shape<gpu, 1, DTypeParam>(Shape1(shape_[1]), s);
+#if CUDNN_VERSION >= 7000
         CUDNN_CALL(cudnnBatchNormalizationForwardTraining(s->dnn_handle_,
-                                                          mode,
+                                                          CUDNN_BATCHNORM_SPATIAL_PERSISTENT,
                                                           &a,
                                                           &b,
                                                           io_desc_,
@@ -157,6 +135,25 @@ class CuDNNBatchNormOp : public Operator {
                                                           param_.eps,
                                                           save_mean.dptr_,
                                                           save_inv_var.dptr_));
+#else
+        CUDNN_CALL(cudnnBatchNormalizationForwardTraining(s->dnn_handle_,
+                                                          CUDNN_BATCHNORM_SPATIAL,
+                                                          &a,
+                                                          &b,
+                                                          io_desc_,
+                                                          x.dptr_,
+                                                          io_desc_,
+                                                          y.dptr_,
+                                                          mean_desc_,
+                                                          gamma.dptr_,
+                                                          beta.dptr_,
+                                                          1 - param_.momentum,
+                                                          moving_mean.dptr_,
+                                                          moving_inv_var.dptr_,
+                                                          param_.eps,
+                                                          save_mean.dptr_,
+                                                          save_inv_var.dptr_));
+#endif
       } else {
         CUDNN_CALL(cudnnBatchNormalizationForwardInference(s->dnn_handle_,
                                                            CUDNN_BATCHNORM_SPATIAL,
@@ -201,11 +198,6 @@ class CuDNNBatchNormOp : public Operator {
       out_grad[cudnnbatchnorm::kOut].get_with_shape<gpu, 4, DType>(shape_, s);
 
 #if CUDNN_VERSION >= 4007
-#if CUDNN_VERSION >= 7002
-    auto mode = CUDNN_BATCHNORM_SPATIAL_PERSISTENT;
-#else
-    auto mode = CUDNN_BATCHNORM_SPATIAL;
-#endif
     MSHADOW_REAL_TYPE_SWITCH(dtype_param_, DTypeParam, {
       Tensor<gpu, 1, DTypeParam> gamma =
         in_data[cudnnbatchnorm::kGamma].get_with_shape<gpu, 1, DTypeParam>(Shape1(shape_[1]), s);
@@ -225,9 +217,10 @@ class CuDNNBatchNormOp : public Operator {
 
       if (param_.fix_gamma) gamma = 1.f;
 
+#if CUDNN_VERSION >= 7000
       CUDNN_CALL(cudnnBatchNormalizationBackward(
         s->dnn_handle_,
-        mode,
+        CUDNN_BATCHNORM_SPATIAL_PERSISTENT,
         &a,
         &b,
         &a,
@@ -245,6 +238,28 @@ class CuDNNBatchNormOp : public Operator {
         param_.eps,
         save_mean.dptr_,
         save_inv_var.dptr_));
+#else
+      CUDNN_CALL(cudnnBatchNormalizationBackward(
+        s->dnn_handle_,
+        CUDNN_BATCHNORM_SPATIAL,
+        &a,
+        &b,
+        &a,
+        req[cudnnbatchnorm::kGamma] == kWriteTo ? &b: &b_add,
+        io_desc_,
+        x.dptr_,
+        io_desc_,
+        dy.dptr_,
+        io_desc_,
+        dx.dptr_,
+        mean_desc_,
+        gamma.dptr_,
+        dgamma.dptr_,
+        dbeta.dptr_,
+        param_.eps,
+        save_mean.dptr_,
+        save_inv_var.dptr_));
+#endif
       if (param_.fix_gamma) dgamma = 0.f;
     })
 #else  // CUDNN_VERSION < 4007
@@ -266,6 +281,25 @@ class CuDNNBatchNormOp : public Operator {
       CHECK_EQ(s->dnn_handle_ownership_, mshadow::Stream<gpu>::OwnHandle);
 
       if (param_.fix_gamma) gamma = 1.f;
+#if CUDNN_VERSION >= 7000
+      CUDNN_CALL(cudnnBatchNormalizationBackward(s->dnn_handle_,
+                                                 CUDNN_BATCHNORM_SPATIAL_PERSISTENT,
+                                                 &a,
+                                                 &b,
+                                                 io_desc_,
+                                                 x.dptr_,
+                                                 io_desc_,
+                                                 dy.dptr_,
+                                                 io_desc_,
+                                                 dx.dptr_,
+                                                 mean_desc_,
+                                                 gamma.dptr_,
+                                                 dgamma.dptr_,
+                                                 dbeta.dptr_,
+                                                 param_.eps,
+                                                 save_mean.dptr_,
+                                                 save_inv_var.dptr_));
+#else
       CUDNN_CALL(cudnnBatchNormalizationBackward(s->dnn_handle_,
                                                  CUDNN_BATCHNORM_SPATIAL,
                                                  &a,
@@ -283,6 +317,7 @@ class CuDNNBatchNormOp : public Operator {
                                                  param_.eps,
                                                  save_mean.dptr_,
                                                  save_inv_var.dptr_));
+#endif
       if (param_.fix_gamma) dgamma = 0.f;
     })
 #endif

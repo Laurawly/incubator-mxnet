@@ -1,20 +1,3 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-
 # pylint: skip-file
 from __future__ import print_function
 
@@ -26,6 +9,9 @@ import numpy as np
 import mxnet as mx
 from mxnet import gluon, autograd
 from mxnet.gluon import nn
+
+from data import mnist_iterator
+
 
 # Parse CLI arguments
 
@@ -55,25 +41,16 @@ with net.name_scope():
 
 # data
 
-def transformer(data, label):
-    data = data.reshape((-1,)).astype(np.float32)/255
-    return data, label
-
-train_data = gluon.data.DataLoader(
-    gluon.data.vision.MNIST('./data', train=True, transform=transformer),
-    batch_size=opt.batch_size, shuffle=True, last_batch='discard')
-
-val_data = gluon.data.DataLoader(
-    gluon.data.vision.MNIST('./data', train=False, transform=transformer),
-    batch_size=opt.batch_size, shuffle=False)
+train_data, val_data = mnist_iterator(batch_size=opt.batch_size, input_shape=(28*28,))
 
 # train
 
 def test(ctx):
     metric = mx.metric.Accuracy()
-    for data, label in val_data:
-        data = data.as_in_context(ctx)
-        label = label.as_in_context(ctx)
+    val_data.reset()
+    for batch in val_data:
+        data = batch.data[0].as_in_context(ctx)
+        label = batch.label[0].as_in_context(ctx)
         output = net(data)
         metric.update([label], [output])
 
@@ -82,20 +59,21 @@ def test(ctx):
 
 def train(epochs, ctx):
     # Collect all parameters from net and its children, then initialize them.
-    net.initialize(mx.init.Xavier(magnitude=2.24), ctx=ctx)
+    net.collect_params().initialize(mx.init.Xavier(magnitude=2.24), ctx=ctx)
     # Trainer is for updating parameters with gradient.
     trainer = gluon.Trainer(net.collect_params(), 'sgd',
-                            {'learning_rate': opt.lr, 'momentum': opt.momentum})
+                          {'learning_rate': opt.lr, 'momentum': opt.momentum})
     metric = mx.metric.Accuracy()
     loss = gluon.loss.SoftmaxCrossEntropyLoss()
 
     for epoch in range(epochs):
         # reset data iterator and metric at begining of epoch.
+        train_data.reset()
         metric.reset()
-        for i, (data, label) in enumerate(train_data):
+        for i, batch in enumerate(train_data):
             # Copy data to ctx if necessary
-            data = data.as_in_context(ctx)
-            label = label.as_in_context(ctx)
+            data = batch.data[0].as_in_context(ctx)
+            label = batch.label[0].as_in_context(ctx)
             # Start recording computation graph with record() section.
             # Recorded graphs can then be differentiated with backward.
             with autograd.record():
@@ -117,7 +95,7 @@ def train(epochs, ctx):
         name, val_acc = test(ctx)
         print('[Epoch %d] Validation: %s=%f'%(epoch, name, val_acc))
 
-    net.save_params('mnist.params')
+    net.collect_params().save('mnist.params')
 
 
 if __name__ == '__main__':

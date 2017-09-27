@@ -1,20 +1,3 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-
 """Weight initializer."""
 from __future__ import absolute_import, print_function
 
@@ -691,26 +674,41 @@ class FusedRNN(Initializer):
         should be the same with arguments passed to FusedRNNCell.
     forget_bias : float
         should be the same with arguments passed to FusedRNNCell.
+    cudnn_algo_verbose : bool
+        should be the same with arguments passed to FusedRNNCell.
+    cudnn_algo : int
+        should be the same with arguments passed to FusedRNNCell.
+    cudnn_tensor_core : bool
+        should be the same with arguments passed to FusedRNNCell.
     """
-    def __init__(self, init, num_hidden, num_layers, mode, bidirectional=False, forget_bias=1.0):
+    def __init__(self, init, num_hidden, num_layers, mode, bidirectional=False, forget_bias=1.0,
+                 cudnn_algo_verbose=False, cudnn_algo=-1, cudnn_tensor_core=None):
         if isinstance(init, string_types):
             klass, kwargs = json.loads(init)
             init = _INITIALIZER_REGISTRY[klass.lower()](**kwargs)
         super(FusedRNN, self).__init__(init=init.dumps() if init is not None else None,
                                        num_hidden=num_hidden, num_layers=num_layers, mode=mode,
-                                       bidirectional=bidirectional, forget_bias=forget_bias)
+                                       bidirectional=bidirectional, forget_bias=forget_bias,
+                                       cudnn_algo_verbose=cudnn_algo_verbose, cudnn_algo=cudnn_algo,
+                                       cudnn_tensor_core=cudnn_tensor_core)
         self._init = init
         self._num_hidden = num_hidden
         self._num_layers = num_layers
         self._mode = mode
         self._bidirectional = bidirectional
         self._forget_bias = forget_bias
+        self._cudnn_algo_verbose = cudnn_algo_verbose
+        self._cudnn_algo = cudnn_algo
+        self._cudnn_tensor_core = cudnn_tensor_core
 
     def _init_weight(self, desc, arr): # pylint: disable=arguments-differ
         from .rnn import rnn_cell
         cell = rnn_cell.FusedRNNCell(self._num_hidden, self._num_layers,
                                      self._mode, self._bidirectional,
-                                     forget_bias=self._forget_bias, prefix='')
+                                     forget_bias=self._forget_bias, prefix='',
+                                     cudnn_algo_verbose=self._cudnn_algo_verbose,
+                                     cudnn_algo=self._cudnn_algo,
+                                     cudnn_tensor_core=self._cudnn_tensor_core)
         args = cell.unpack_weights({'parameters': arr})
         for name in args:
             arg_desc = InitDesc(name, global_init=desc.global_init)

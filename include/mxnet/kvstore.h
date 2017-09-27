@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+ * Copyright (c) 2015 by Contributors
  * \file kvstore.h
  * \brief key-value store interface for mxnet
  */
@@ -25,7 +7,6 @@
 #define MXNET_KVSTORE_H_
 #include <dmlc/io.h>
 #include <vector>
-#include <utility>
 #include <unordered_map>
 #include <string>
 #include <functional>
@@ -67,7 +48,7 @@ class KVStore {
   /*!
    * \brief Initialize a list of key-value pair to the store.
    *
-   * One must initialize the key before \ref Push and \ref Pull, and a key
+   * One must initalize the key before \ref Push and \ref Pull, and a key
    * should be only initialized once
    *
    * It returns after data have been initialized successfully.
@@ -162,7 +143,7 @@ class KVStore {
    * \param priority Priority of the action.
    */
   virtual void Pull(const std::vector<int>& keys,
-                    const std::vector<NDArray*>& values,
+                    const std::vector<NDArray>& values,
                     int priority = 0) = 0;
   /*!
    * \brief pull a list of key-value pairs from the store
@@ -171,41 +152,53 @@ class KVStore {
    * \param priority Priority of the action.
    */
   virtual void Pull(const std::vector<std::string>& str_keys,
-                    const std::vector<NDArray*>& values,
+                    const std::vector<NDArray>& values,
                     int priority = 0) = 0;
 
+
   /*!
-   * \brief pull a list of key-value pairs from the store.
-   *        The NDArray pulled back will be in row_sparse storage with only the
-   *        specified row_ids present (others rows are zeros).
+   * \brief allreduce a list of key-value pairs from the store
+   *
+   * One must call Init() on \a key before. And \a output should be pre-allocated
+   *
+   * This function returns after adding an allreduce operator to the engine. Any
+   * following operator requiring reading value will be blocked until the
+   * actual pull is finished. One can wait the pull is finished by
+   *
+   * - when type == "local"
+   * \code
+   * for (auto& v : values) v.WaitToRead()
+   * \endcode
+   *
+   * - when type == "dist"
+   * \code
+   * Wait(keys);
+   * \endcode
+   *
    * \param keys the list of keys
-   * \param values the list of buffers - row_id pairs
-   * \param priority the priority of the action.
+   * \param inputs the list of values to be allreduced
+   * \param outputs the list of buffers for the pulled data, they should be preallocated
+   * \param priority Priority of the action.
    */
-  virtual void PullRowSparse(const std::vector<int>& str_keys,
-                             const std::vector<std::pair<NDArray*, NDArray>>& val_rowids,
-                             int priority = 0) = 0;
+  virtual void Allreduce(const std::vector<int>& keys,
+                    const std::vector<NDArray>& inputs,
+                    const std::vector<NDArray>& outputs,
+                    int priority = 0) {
+    Push(keys, inputs, priority);
+    Pull(keys, outputs, priority);
+  }
 
-  /*!
-   * \brief pull a list of key-value pairs from the store, where each key is a string.
-   *        The NDArray pulled back will be in row_sparse storage with only the
-   *        specified row_ids present (others rows are zeros).
-   * \param keys the list of keys in string format
-   * \param values the list of buffers - row_id pairs
-   * \param priority the priority of the action.
-   */
-  virtual void PullRowSparse(const std::vector<std::string>& str_keys,
-                             const std::vector<std::pair<NDArray*, NDArray>>& val_rowids,
-                             int priority = 0) = 0;
-
+  virtual void Allreduce(const std::vector<std::string>& keys,
+                    const std::vector<NDArray>& inputs,
+                    const std::vector<NDArray>& outputs,
+                    int priority = 0) {
+    Push(keys, inputs, priority);
+    Pull(keys, outputs, priority);
+  }
   /**
    * \brief the prototype of user-defined updater
    */
   typedef std::function<void(int, const NDArray&, NDArray*)> Updater;
-  /**
-   * \brief the prototype of user-defined updater with string keys
-   */
-  typedef std::function<void(const std::string&, const NDArray&, NDArray*)> StrUpdater;
   /*!
    * \brief set an updater
    *
@@ -218,19 +211,6 @@ class KVStore {
   virtual void set_updater(const Updater& updater) {
     CHECK(updater) << "invalid updater";
     updater_ = updater;
-  }
-  /*!
-   * \brief set an updater with string keys
-   *
-   * Given a string key, assume \a x is the received (pushed) value and \a y is the
-   * value stored on the store node. The store updates \a y by `h(x, &y)`. The
-   * default \a h is ASSIGN, namely `*y = x`.
-   *
-   * \param updater user-defined string updater, default is assign
-   */
-  virtual void set_updater(const StrUpdater& updater) {
-    CHECK(updater) << "invalid updater";
-    str_updater_ = updater;
   }
 
   /******************************************************
@@ -373,14 +353,9 @@ class KVStore {
 
  protected:
   /**
-   * \brief the user-defined updater
+   * \brief the user-defined  updater
    */
   Updater updater_;
-
-  /**
-   * \brief the user-defined updater with string keys
-   */
-  StrUpdater str_updater_;
 
   /**
    * \brief the kvstore type

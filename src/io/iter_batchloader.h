@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+ *  Copyright (c) 2015 by Contributors
  * \file iter_batchloader.h
  * \brief define a batch adapter to create tblob batch
  */
@@ -41,7 +23,7 @@ namespace io {
 class BatchLoader : public IIterator<TBlobBatch> {
  public:
   explicit BatchLoader(IIterator<DataInst> *base):
-    head_(1), num_overflow_(0), base_(base) {
+      base_(base), head_(1), num_overflow_(0) {
   }
 
   virtual ~BatchLoader(void) {
@@ -52,7 +34,7 @@ class BatchLoader : public IIterator<TBlobBatch> {
     std::vector<std::pair<std::string, std::string> > kwargs_left;
     // init batch param, it could have similar param with
     kwargs_left = param_.InitAllowUnknown(kwargs);
-    // Init space for out
+    // Init space for out_
     out_.inst_index = new unsigned[param_.batch_size];
     out_.batch_size = param_.batch_size;
     out_.data.clear();
@@ -69,7 +51,6 @@ class BatchLoader : public IIterator<TBlobBatch> {
     }
     head_ = 1;
   }
-
   virtual bool Next(void) {
     out_.num_batch_padd = 0;
     out_.batch_size = param_.batch_size;
@@ -129,25 +110,23 @@ class BatchLoader : public IIterator<TBlobBatch> {
     return out_;
   }
 
- protected:
+ private:
   /*! \brief batch parameters */
   BatchParam param_;
   /*! \brief output data */
   TBlobBatch out_;
+  /*! \brief base iterator */
+  IIterator<DataInst> *base_;
   /*! \brief on first */
   int head_;
   /*! \brief number of overflow instances that readed in round_batch mode */
   int num_overflow_;
-  /*! \brief tensor to hold data */
-  std::vector<TBlobContainer> data_;
-
- private:
-  /*! \brief base iterator */
-  IIterator<DataInst> *base_;
   /*! \brief data shape */
   std::vector<TShape> shape_;
   /*! \brief unit size */
   std::vector<size_t> unit_size_;
+  /*! \brief tensor to hold data */
+  std::vector<TBlobContainer> data_;
   // initialize the data holder by using from the first batch.
   inline void InitData(const DataInst& first_batch) {
     shape_.resize(first_batch.data.size());

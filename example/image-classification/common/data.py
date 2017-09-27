@@ -1,20 +1,3 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-
 import mxnet as mx
 import random
 from mxnet.io import DataBatch, DataIter
@@ -110,14 +93,14 @@ def get_rec_iter(args, kv=None):
     image_shape = tuple([int(l) for l in args.image_shape.split(',')])
     if 'benchmark' in args and args.benchmark:
         data_shape = (args.batch_size,) + image_shape
-        train = SyntheticDataIter(args.num_classes, data_shape, 500, np.float32)
+        train = SyntheticDataIter(args.num_classes, data_shape, 1000, np.float32)
         return (train, None)
     if kv:
         (rank, nworker) = (kv.rank, kv.num_workers)
     else:
         (rank, nworker) = (0, 1)
     rgb_mean = [float(i) for i in args.rgb_mean.split(',')]
-    train = mx.io.ImageRecordIter(
+    train = mx.io.ImageRecordIter2(
         path_imgrec         = args.data_train,
         label_width         = 1,
         mean_r              = rgb_mean[0],
@@ -145,7 +128,7 @@ def get_rec_iter(args, kv=None):
         part_index          = rank)
     if args.data_val is None:
         return (train, None)
-    val = mx.io.ImageRecordIter(
+    val = mx.io.ImageRecordIter2(
         path_imgrec         = args.data_val,
         label_width         = 1,
         mean_r              = rgb_mean[0],

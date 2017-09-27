@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+ * Copyright (c) 2015 by Contributors
  * \file fully_connect_op-inl.h
  * \brief fully connect operator and symbol
 */
@@ -33,7 +15,7 @@
 #include <utility>
 #include "./operator_common.h"
 #include "./elemwise_op_common.h"
-#include "linalg.h"
+
 
 namespace mxnet {
 namespace op {
@@ -48,15 +30,59 @@ enum FullyConnectedOpOutputs {kOut};
 struct FullyConnectedParam : public dmlc::Parameter<FullyConnectedParam> {
   int num_hidden;
   bool no_bias;
-  bool flatten;
+  bool cublas_algo_verbose;
+  // This flag determines whether the new cublas_fully_connected object is invoked
+  // (with detailed control over compute precision and algo), or the more-restrictive
+  // mshadow use of cublas.  This flag parallels the control offered by the cudnn_off
+  // flag seen with convolution.
+  bool cublas_off;
+  dmlc::optional<bool> cublas_tensor_core;
+  dmlc::optional<int> cublas_algo_fwd;
+  dmlc::optional<int> cublas_algo_bwd_data;
+  dmlc::optional<int> cublas_algo_bwd_weights;
+  int32_t cublas_algo_fwd_prec;
+  int32_t cublas_algo_bwd_prec;
+
   DMLC_DECLARE_PARAMETER(FullyConnectedParam) {
     // TODO(bing) add support for boolean
     DMLC_DECLARE_FIELD(num_hidden).set_lower_bound(1)
     .describe("Number of hidden nodes of the output.");
     DMLC_DECLARE_FIELD(no_bias).set_default(false)
     .describe("Whether to disable bias parameter.");
-    DMLC_DECLARE_FIELD(flatten).set_default(true)
-    .describe("Whether to collapse all but the first axis of the input data tensor.");
+    DMLC_DECLARE_FIELD(cublas_algo_verbose).set_default(false)
+    .describe("Verboseness of algo selection. true = output selection, false = no output");
+    DMLC_DECLARE_FIELD(cublas_off).set_default(false)
+    .describe("Turn off full-control cublas for this layer.");
+    DMLC_DECLARE_FIELD(cublas_tensor_core)
+    .set_default(dmlc::optional<bool>())
+    .describe("Allow Tensor Core math for default-chosen algos.");
+    DMLC_DECLARE_FIELD(cublas_algo_fwd)
+    .set_default(dmlc::optional<int>())
+    .describe("Specified Forward GEMM Algorithm.");
+    DMLC_DECLARE_FIELD(cublas_algo_bwd_data)
+    .set_default(dmlc::optional<int>())
+    .describe("Specified Backprop-to-Data GEMM Algorithm.");
+    DMLC_DECLARE_FIELD(cublas_algo_bwd_weights)
+    .set_default(dmlc::optional<int>())
+    .describe("Specified Backprop-to-Weights GEMM Algorithm.");
+    DMLC_DECLARE_FIELD(cublas_algo_fwd_prec)
+    .add_enum("None", -1)
+    .add_enum("float32", mshadow::kFloat32)
+    .add_enum("float64", mshadow::kFloat64)
+    .add_enum("float16", mshadow::kFloat16)
+    .set_default(-1)
+    .describe("Precision of the computation of the forward GEMM kernel.\n    "
+              "Default is determined by the tensor data type and the\n    "
+              "MSHADOW_USE_PASCAL compiled-in flag.");
+    DMLC_DECLARE_FIELD(cublas_algo_bwd_prec)
+    .add_enum("None", -1)
+    .add_enum("float32", mshadow::kFloat32)
+    .add_enum("float64", mshadow::kFloat64)
+    .add_enum("float16", mshadow::kFloat16)
+    .set_default(-1)
+    .describe("Precision of the computation of the back-prop kernels.\n    "
+              "Default is determined by the tensor data type and the\n    "
+              "MSHADOW_USE_PASCAL compiled-in flag.");
   }
 };
 
@@ -94,23 +120,12 @@ class FullyConnectedOp : public Operator {
     const TShape& ishape = in_data[fullc::kData].shape_;
     const TShape& oshape = out_data[fullc::kOut].shape_;
 
+    Tensor<xpu, 2, DType> data = in_data[fullc::kData].get_with_shape<xpu, 2, DType>(
+        Shape2(ishape[0], ishape.ProdShape(1, ishape.ndim())), s);
     Tensor<xpu, 2, DType> wmat = in_data[fullc::kWeight].get<xpu, 2, DType>(s);
-    Tensor<xpu, 2, DType> data, out;
-    if (!param_.flatten) {
-      data = in_data[fullc::kData].get_with_shape<xpu, 2, DType>(
-          Shape2(ishape.ProdShape(0, ishape.ndim()-1), ishape[ishape.ndim()-1]), s);
-      out = out_data[fullc::kOut].get_with_shape<xpu, 2, DType>(
-          Shape2(oshape.ProdShape(0, oshape.ndim()-1), oshape[oshape.ndim()-1]), s);
-    } else {
-      data = in_data[fullc::kData].get_with_shape<xpu, 2, DType>(
-          Shape2(ishape[0], ishape.ProdShape(1, ishape.ndim())), s);
-      out = out_data[fullc::kOut].get_with_shape<xpu, 2, DType>(
-          Shape2(oshape[0], oshape.ProdShape(1, oshape.ndim())), s);
-    }
-
-    // Legacy approach shown here for comparison:
-    //   out = dot(data, wmat.T());
-    linalg_gemm(data, wmat, out, false, true, s);
+    Tensor<xpu, 2, DType> out = out_data[fullc::kOut].get_with_shape<xpu, 2, DType>(
+        Shape2(oshape[0], oshape.ProdShape(1, oshape.ndim())), s);
+    out = dot(data, wmat.T());
     if (!param_.no_bias) {
       Tensor<xpu, 1, DType> bias = in_data[fullc::kBias].get<xpu, 1, DType>(s);
       out += repmat(bias, data.size(0));
@@ -136,23 +151,11 @@ class FullyConnectedOp : public Operator {
     const TShape& ishape = in_data[fullc::kData].shape_;
     const TShape& oshape = out_grad[fullc::kOut].shape_;
 
+    Tensor<xpu, 2, DType> data = in_data[fullc::kData].get_with_shape<xpu, 2, DType>(
+        Shape2(ishape[0], ishape.ProdShape(1, ishape.ndim())), s);
     Tensor<xpu, 2, DType> wmat = in_data[fullc::kWeight].get<xpu, 2, DType>(s);
-    Tensor<xpu, 2, DType> data, grad, gdata;
-    if (!param_.flatten) {
-      data = in_data[fullc::kData].get_with_shape<xpu, 2, DType>(
-          Shape2(ishape.ProdShape(0, ishape.ndim()-1), ishape[ishape.ndim()-1]), s);
-      grad = out_grad[fullc::kOut].get_with_shape<xpu, 2, DType>(
-          Shape2(oshape.ProdShape(0, oshape.ndim()-1), oshape[oshape.ndim()-1]), s);
-      gdata = in_grad[fullc::kData].get_with_shape<xpu, 2, DType>(
-          Shape2(ishape.ProdShape(0, ishape.ndim()-1), ishape[ishape.ndim()-1]), s);
-    } else {
-      data = in_data[fullc::kData].get_with_shape<xpu, 2, DType>(
-          Shape2(ishape[0], ishape.ProdShape(1, ishape.ndim())), s);
-      grad = out_grad[fullc::kOut].get_with_shape<xpu, 2, DType>(
-          Shape2(oshape[0], oshape.ProdShape(1, oshape.ndim())), s);
-      gdata = in_grad[fullc::kData].get_with_shape<xpu, 2, DType>(
-          Shape2(ishape[0], ishape.ProdShape(1, ishape.ndim())), s);
-    }
+    Tensor<xpu, 2, DType> grad = out_grad[fullc::kOut].get_with_shape<xpu, 2, DType>(
+        Shape2(oshape[0], oshape.ProdShape(1, oshape.ndim())), s);
 
 #if defined(__CUDACC__)
     CHECK_EQ(s->blas_handle_ownership_, Stream<xpu>::OwnHandle)
@@ -162,18 +165,16 @@ class FullyConnectedOp : public Operator {
     CHECK_NE(req[fullc::kWeight], kWriteInplace) << "cannot write weight inplace";
     // gradient of weight
     Tensor<xpu, 2, DType> gwmat = in_grad[fullc::kWeight].get<xpu, 2, DType>(s);
-    // Legacy approach shown here for comparison:
-    //   out = Assign(gwmat, req[fullc::kWeight], dot(grad.T(), data));
-    linalg_gemm(grad, data, gwmat, true, false, s, req[fullc::kWeight]);
+    Assign(gwmat, req[fullc::kWeight], dot(grad.T(), data));
     // gradient of bias
     if (!param_.no_bias) {
       Tensor<xpu, 1, DType> gbias = in_grad[fullc::kBias].get<xpu, 1, DType>(s);
       Assign(gbias, req[fullc::kBias], sum_rows(grad));
     }
     // gradient of data
-    // Legacy approach shown here for comparison:
-    //   Assign(gdata, req[fullc::kData], dot(grad, wmat));
-    linalg_gemm(grad, wmat, gdata, false, false, s, req[fullc::kData]);
+    Tensor<xpu, 2, DType> gdata = in_grad[fullc::kData].get_with_shape<xpu, 2, DType>(
+        Shape2(ishape[0], ishape.ProdShape(1, ishape.ndim())), s);
+    Assign(gdata, req[fullc::kData], dot(grad, wmat));
   }
 
  private:
@@ -221,24 +222,13 @@ class FullyConnectedProp : public OperatorProperty {
     // require data to be known
     if (dshape.ndim() ==  0) return false;
 
-    index_t num_input;
-    if (!param_.flatten) {
-      num_input = dshape[dshape.ndim()-1];
-    } else {
-      num_input = dshape.ProdShape(1, dshape.ndim());
-    }
+    index_t num_input = dshape.ProdShape(1, dshape.ndim());
     SHAPE_ASSIGN_CHECK(*in_shape, fullc::kWeight, Shape2(param_.num_hidden, num_input));
     if (!param_.no_bias) {
       SHAPE_ASSIGN_CHECK(*in_shape, fullc::kBias, Shape1(param_.num_hidden));
     }
 
-    if (!param_.flatten) {
-      TShape result_shape(dshape);
-      result_shape[dshape.ndim()-1] = param_.num_hidden;
-      SHAPE_ASSIGN_CHECK(*out_shape, 0, result_shape);
-    } else {
-      SHAPE_ASSIGN_CHECK(*out_shape, 0, Shape2(dshape[0], param_.num_hidden));
-    }
+    SHAPE_ASSIGN_CHECK(*out_shape, 0, Shape2(dshape[0], param_.num_hidden));
     if (oshape.ndim() != 0) {
       dshape[0] = oshape[0];
       SHAPE_ASSIGN_CHECK(*in_shape, fullc::kData, dshape);

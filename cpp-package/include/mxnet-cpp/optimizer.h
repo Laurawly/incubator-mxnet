@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+*  Copyright (c) 2016 by Contributors
 * \file optimizer.h
 * \brief definition of optimizer
 * \author Chuntao Hong, Zhang Chen
@@ -35,7 +17,6 @@
 #include "dmlc/logging.h"
 #include "mxnet-cpp/ndarray.h"
 #include "mxnet-cpp/op_map.h"
-#include "mxnet-cpp/lr_scheduler.h"
 
 namespace mxnet {
 namespace cpp {
@@ -76,16 +57,15 @@ class Optimizer {
     return this;
   }
   /*!
-  * \bried set the lr scheduler
-  * \param lrScheduler lr scheduler used for this optimizer
-  * \return reference if self
+  *  \brief Update a weight with gradient.
+  *  \param index the unique index for the weight.
+  *  \param weight the weight to update.
+  *  \param grad gradient for the weight.
+  *  \param lr learning rate.
+  *  \param wd weight decay.
   */
-  Optimizer *SetLRScheduler(std::unique_ptr<LRScheduler> lrScheduler) {
-    CHECK(lrScheduler);
-    lrScheduler_ = std::move(lrScheduler);
-    lrScheduler_->SetLR(std::stof(params_["lr"]));
-    return this;
-  }
+  void Update(int index, NDArray weight, NDArray grad, mx_float lr,
+              mx_float wd);
   /*!
   *  \brief Update a weight with gradient.
   *  \param index the unique index for the weight.
@@ -112,10 +92,7 @@ class Optimizer {
   std::map<int, unsigned> count_;
   unsigned begin_num_update_, num_update_;
   unsigned UpdateCount_(int index);
-  float GetLR_(int index);
-  float GetWD_(int index);
   virtual void CreateState_(int index, NDArray weight);
-  std::unique_ptr<LRScheduler> lrScheduler_ = nullptr;
 };
 
 typedef std::function<Optimizer*()> OptimizerCreator;
@@ -194,6 +171,7 @@ class AdaDeltaOptimizer : public Optimizer {
   void CreateState_(int index, NDArray weight) override;
   std::map<int, NDArray*> acc_g_, acc_delta_;
 };
+
 
 }  // namespace cpp
 }  // namespace mxnet

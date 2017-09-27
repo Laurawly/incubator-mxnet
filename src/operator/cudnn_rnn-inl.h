@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+ * Copyright (c) 2016 by Contributors
  * \file cudnn_rnn-inl.h
  * \brief
  * \author Sebastian Bodenstein
@@ -39,16 +21,28 @@ namespace op {
 template<typename DType>
 class CuDNNRNNOp : public Operator {
  public:
-  explicit CuDNNRNNOp(RNNParam param) {
+  explicit CuDNNRNNOp(RNNParam param, const Context& ctx) {
     this->param_ = param;
+    // With cuDNN v7, TensorCore is only available for fp16.  Warn user
+    // if cudnn_tensor_core is set for a non-fp16 operator.
+    if (mshadow::DataType<DType>::kFlag != mshadow::kFloat16) {
+      if (param_.cudnn_tensor_core.has_value() && param_.cudnn_tensor_core.value())
+        LOG(WARNING) << "Ignoring cudnn_tensor_core=1 setting for non-float16 convolution.";
+      param_.cudnn_tensor_core = false;
+    } else if (!param_.cudnn_tensor_core.has_value()) {
+      // No local setting for TensorCore use policy, look to global policy.
+      param_.cudnn_tensor_core = GetEnvAllowTensorCore();
+    }
+#if CUDNN_MAJOR >= 6
+    if (param_.cudnn_algo == CUDNN_RNN_ALGO_PERSIST_STATIC &&
+        ComputeCapabilityMajor(ctx.dev_id) < 6) {
+      LOG(WARNING) << "Algo CUDNN_RNN_ALGO_PERSIST_STATIC is not supported on this GPU arch. " <<
+                   "Falling back to CUDNN_RNN_ALGO_STANDARD.";
+      param_.cudnn_algo = CUDNN_RNN_ALGO_STANDARD;
+    }
+#endif
     init_cudnn_ = false;
     dtype_ = mshadow::DataType<DType>::kCudnnFlag;
-    // TensorCore algos only allowed on fp16-I/O convolutions if permitted by the global policy.
-    // No tests in place for fp16 RNNs, so leave TensorCore disabled for now.
-    cudnn_tensor_core_ = false;
-    // When fp16 RNN tests are introduced, we can enable TensorCore as follows:
-//    cudnn_tensor_core =
-//        mshadow::DataType<DType>::kFlag == mshadow::kFloat16 && GetEnvAllowTensorCore();
     // Defaults
     input_mode_ = CUDNN_LINEAR_INPUT;  // Don't support this yet
     // RNN Mode
@@ -458,7 +452,15 @@ class CuDNNRNNOp : public Operator {
       CUDNN_CALL(cudnnCreateRNNDescriptor(&rnn_desc_));
 
       #if CUDNN_MAJOR >= 6
-        cudnnRNNAlgo_t rnn_algo = CUDNN_RNN_ALGO_STANDARD;
+        auto rnn_algo = (param_.cudnn_algo == -1) ? CUDNN_RNN_ALGO_STANDARD
+                                                  : static_cast<cudnnRNNAlgo_t>(param_.cudnn_algo);
+        // Log algos selected.  No selection shows up as -1.
+        if (param_.cudnn_algo_verbose) {
+          LOG(INFO) << "RNN algo with (seq-length, batchsize, in-size) = " <<
+                    "(" << param_.seq_length_ << "," << param_.batch_size_ <<
+                    "," << param_.input_size_ << ")";
+          LOG(INFO) << "              algo: " << rnn_algo;
+        }
         CUDNN_CALL(cudnnSetRNNDescriptor_v6(s->dnn_handle_,
                                             rnn_desc_,
                                             param_.state_size,
@@ -470,6 +472,11 @@ class CuDNNRNNOp : public Operator {
                                             rnn_algo,
                                             dtype_));
       #else
+        if (param_.cudnn_algo != -1) {
+          LOG(WARNING) << "Algo selection " << param_.cudnn_algo <<
+          " ignored (needs CUDNN_MAJOR >= 6).";
+        }
+
         CUDNN_CALL(cudnnSetRNNDescriptor(rnn_desc_,
                                          param_.state_size,
                                          param_.num_layers,
@@ -481,7 +488,8 @@ class CuDNNRNNOp : public Operator {
       #endif
       #if CUDNN_MAJOR >= 7
         cudnnMathType_t math_type = CUDNN_DEFAULT_MATH;
-        if (cudnn_tensor_core_ && rnn_algo == CUDNN_RNN_ALGO_STANDARD) {
+        if (param_.cudnn_tensor_core.value() &&
+            rnn_algo == CUDNN_RNN_ALGO_STANDARD) {
           math_type = CUDNN_TENSOR_OP_MATH;
         }
         CUDNN_CALL(cudnnSetRNNMatrixMathType(rnn_desc_, math_type));
@@ -582,8 +590,6 @@ class CuDNNRNNOp : public Operator {
   cudnnTensorDescriptor_t dhy_desc_, dcy_desc_;
 
   cudnnFilterDescriptor_t w_desc_, dw_desc_;
-  // Allow TensorCore algo policy
-  bool cudnn_tensor_core_;
 
   #if CUDNN_MAJOR >= 5
   cudnnTensorFormat_t format_;

@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+ * Copyright (c) 2015 by Contributors
  * \file cudnn_algoreg-inl.h
  * \brief
  * \author Bing Xu
@@ -61,22 +43,39 @@ class CuDNNAlgo {
   bool is_tensor_core_algo_;
 };
 
-template<typename ParamType>
 class CuDNNAlgoReg {
  public:
-  bool Find(const ParamType &param,
-            const std::vector<TShape> &in_shape,
-            const std::vector<TShape> &out_shape,
-            cudnnDataType_t cudnn_data_type,
-            cudnnDataType_t cudnn_forward_compute_type,
-            cudnnDataType_t cudnn_backward_compute_type,
-            int sm_arch,
+  template <typename Param>
+  std::string GetKey(const Param &param, const std::vector<TShape> &in_shape,
+                     const std::vector<TShape> &out_shape,
+                     cudnnDataType_t cudnn_data_type,
+                     cudnnDataType_t cudnn_forward_compute_type,
+                     cudnnDataType_t cudnn_backward_compute_type,
+                     int device_id) {
+    std::ostringstream oss;
+    oss << "inputs=";
+    for (auto &i : in_shape)
+      oss << i << ";";
+    oss << "outputs=";
+    for (auto &i : out_shape)
+      oss << i << ";";
+    auto dict = param.__DICT__();
+    for (auto &k : dict)
+      oss << k.first << "=" << k.second << ";";
+    oss << "cudnn_data_type=" << cudnn_data_type << ";";
+    oss << "cudnn_forward_compute_type=" << cudnn_forward_compute_type << ";";
+    oss << "cudnn_backward_compute_type=" << cudnn_backward_compute_type << ";";
+    // A system could be heterogeneous and thus have different algo choices for different
+    // device ids.  'device_id' could possibly be replaced with gpu compute capability,
+    // but identical GPUs could technically have different clock settings.
+    oss << "device_id=" << device_id << ";";
+    return oss.str();
+  }
+
+  bool Find(std::string key,
             CuDNNAlgo<cudnnConvolutionFwdAlgo_t> *fwd,
             CuDNNAlgo<cudnnConvolutionBwdDataAlgo_t> *bwd,
             CuDNNAlgo<cudnnConvolutionBwdFilterAlgo_t> *flt) {
-    CHECK(in_shape.size() == 2 || in_shape.size() == 3);
-    ParamKey key{param, in_shape[0], in_shape[1], out_shape[0], cudnn_data_type,
-                 cudnn_forward_compute_type, cudnn_backward_compute_type, sm_arch};
     std::lock_guard<std::mutex> guard(lock_);
     auto i = reg_.find(key);
     if (i != reg_.end()) {
@@ -88,19 +87,10 @@ class CuDNNAlgoReg {
     return false;
   }
 
-  void Register(const ParamType &param,
-                const std::vector<TShape> &in_shape,
-                const std::vector<TShape> &out_shape,
-                cudnnDataType_t cudnn_data_type,
-                cudnnDataType_t cudnn_forward_compute_type,
-                cudnnDataType_t cudnn_backward_compute_type,
-                int sm_arch,
+  void Register(std::string key,
                 const CuDNNAlgo<cudnnConvolutionFwdAlgo_t> &fwd,
                 const CuDNNAlgo<cudnnConvolutionBwdDataAlgo_t> &bwd,
                 const CuDNNAlgo<cudnnConvolutionBwdFilterAlgo_t> &flt) {
-    CHECK(in_shape.size() == 2 || in_shape.size() == 3);
-    ParamKey key{param, in_shape[0], in_shape[1], out_shape[0], cudnn_data_type,
-                 cudnn_forward_compute_type, cudnn_backward_compute_type, sm_arch};
     std::lock_guard<std::mutex> guard(lock_);
     if (reg_.size() % 50 == 0) {
       LOG(INFO) << "Running performance tests to find the best convolution "
@@ -128,49 +118,9 @@ class CuDNNAlgoReg {
     CuDNNAlgo<cudnnConvolutionBwdFilterAlgo_t> flt;
   };
 
-  struct ParamKey {
-    ParamType param;
-    TShape data_shape, weight_shape, out_shape;
-    cudnnDataType_t cudnn_data_type;
-    cudnnDataType_t cudnn_forward_compute_type;
-    cudnnDataType_t cudnn_backward_compute_type;
-    int sm_arch;
-
-    bool operator==(const ParamKey& other) const {
-      return this->param == other.param &&
-             this->data_shape == other.data_shape &&
-             this->weight_shape == other.weight_shape &&
-             this->out_shape == other.out_shape &&
-             this->cudnn_data_type == other.cudnn_data_type &&
-             this->cudnn_forward_compute_type == other.cudnn_forward_compute_type &&
-             this->cudnn_backward_compute_type == other.cudnn_backward_compute_type &&
-             this->sm_arch == other.sm_arch;
-    }
-  };
-
-  struct ParamHash {
-    size_t operator()(const ParamKey& key) const {
-      std::hash<ParamType> hash_param;
-      size_t ret = hash_param(key.param);
-      ret = dmlc::HashCombine(ret, key.data_shape);
-      ret = dmlc::HashCombine(ret, key.weight_shape);
-      ret = dmlc::HashCombine(ret, key.out_shape);
-      for (const auto& i : key.out_shape) ret = dmlc::HashCombine(ret, i);
-      ret = dmlc::HashCombine(ret, static_cast<int>(key.cudnn_data_type));
-      ret = dmlc::HashCombine(ret, static_cast<int>(key.cudnn_forward_compute_type));
-      ret = dmlc::HashCombine(ret, static_cast<int>(key.cudnn_backward_compute_type));
-      ret = dmlc::HashCombine(ret, key.sm_arch);
-      return ret;
-    }
-  };
-
   std::mutex lock_;
-  std::unordered_map<ParamKey, CudnnAlgorithms, ParamHash> reg_;
+  std::unordered_map<std::string, CudnnAlgorithms> reg_;
 };
-
-typedef CuDNNAlgoReg<ConvolutionParam> CuDNNConvAlgoReg;
-typedef CuDNNAlgoReg<DeconvolutionParam> CuDNNDeconvAlgoReg;
-
 #endif  // __CUDACC__ && CUDNN
 }  // namespace op
 }  // namespace mxnet

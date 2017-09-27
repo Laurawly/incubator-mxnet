@@ -2,14 +2,9 @@ require(mxnet)
 
 context("ndarray")
 
-if (Sys.getenv("R_GPU_ENABLE") != "" & as.integer(Sys.getenv("R_GPU_ENABLE")) == 1) {
-  mx.ctx.default(new = mx.gpu())
-  message("Using GPU for testing.")
-}
-
 test_that("element-wise calculation for vector", {
   x = 1:10
-  mat = mx.nd.array(as.array(x), mx.ctx.default())
+  mat = mx.nd.array(as.array(x), mx.cpu(0))
   expect_equal(x, as.array(mat))
   expect_equal(x + 1, as.array(mat + 1))
   expect_equal(x - 10, as.array(mat - 10))
@@ -31,7 +26,7 @@ test_that("element-wise calculation for vector", {
 
 test_that("element-wise calculation for matrix", {
   x = matrix(1:4, 2, 2)
-  mat = mx.nd.array(as.array(x), mx.ctx.default())
+  mat = mx.nd.array(as.array(x), mx.cpu(0))
   expect_equal(x, as.array(mat))
   expect_equal(x + 1, as.array(mat + 1))
   expect_equal(x - 10, as.array(mat - 10))

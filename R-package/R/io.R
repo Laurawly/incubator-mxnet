@@ -1,12 +1,14 @@
+is.MXDataIter <- function(x) {
+  inherits(x, "Rcpp_MXNativeDataIter") ||
+  inherits(x, "Rcpp_MXArrayDataIter")
+}
+
 #' Judge if an object is mx.dataiter
 #'
 #' @return Logical indicator
 #'
 #' @export
-is.mx.dataiter <- function(x) {
-  inherits(x, "Rcpp_MXNativeDataIter") ||
-  inherits(x, "Rcpp_MXArrayDataIter")
-}
+is.mx.dataiter <- is.MXDataIter
 
 #' Extract a certain field from DataIter.
 #'

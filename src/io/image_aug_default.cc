@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+ *  Copyright (c) 2015 by Contributors
  * \file image_aug_default.cc
  * \brief Default augmenter.
  */
@@ -28,6 +10,7 @@
 #include <vector>
 #include "./image_augmenter.h"
 #include "../common/utils.h"
+#include "../common/nvtx.h"
 
 #if MXNET_USE_OPENCV
 // Registers
@@ -197,6 +180,9 @@ class DefaultImageAugmenter : public ImageAugmenter {
                   common::RANDOM_ENGINE *prnd) override {
     using mshadow::index_t;
     cv::Mat res;
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStart(nvtx::kMagenta, "Resize");
+#endif
     if (param_.resize != -1) {
       int new_height, new_width;
       if (src.rows > src.cols) {
@@ -216,7 +202,13 @@ class DefaultImageAugmenter : public ImageAugmenter {
     } else {
       res = src;
     }
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStop();
+#endif
 
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStart(nvtx::kBlue1, "WarpAffine");
+#endif
     // normal augmentation by affine transformation.
     if (param_.max_rotate_angle > 0 || param_.max_shear_ratio > 0.0f
         || param_.rotate > 0 || rotate_list_.size() > 0 || param_.max_random_scale != 1.0
@@ -267,14 +259,26 @@ class DefaultImageAugmenter : public ImageAugmenter {
                      cv::Scalar(param_.fill_value, param_.fill_value, param_.fill_value));
       res = temp_;
     }
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStop();
+#endif
 
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStart(nvtx::kRed1, "Pad logic");
+#endif
     // pad logic
     if (param_.pad > 0) {
       cv::copyMakeBorder(res, res, param_.pad, param_.pad, param_.pad, param_.pad,
                          cv::BORDER_CONSTANT,
                          cv::Scalar(param_.fill_value, param_.fill_value, param_.fill_value));
     }
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStop();
+#endif
 
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStart(nvtx::kOrange, "Crop");
+#endif
     // crop logic
     if (param_.max_crop_size != -1 || param_.min_crop_size != -1) {
       CHECK(res.cols >= param_.max_crop_size && res.rows >= \
@@ -310,7 +314,13 @@ class DefaultImageAugmenter : public ImageAugmenter {
       cv::Rect roi(x, y, param_.data_shape[2], param_.data_shape[1]);
       res = res(roi);
     }
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStop();
+#endif
 
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStart(nvtx::kCyan, "Color augmentation");
+#endif
     // color space augmentation
     if (param_.random_h != 0 || param_.random_s != 0 || param_.random_l != 0) {
       std::uniform_real_distribution<float> rand_uniform(0, 1);
@@ -332,6 +342,9 @@ class DefaultImageAugmenter : public ImageAugmenter {
       }
       cvtColor(res, res, CV_HLS2BGR);
     }
+#if MXNET_USE_NVTX
+    nvtx::gpuRangeStop();
+#endif
     return res;
   }
 

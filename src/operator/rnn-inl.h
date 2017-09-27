@@ -1,23 +1,5 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
+ * Copyright (c) 2015 by Contributors
  * \file rnn-inl.h
  * \brief
  * \author Sebastian Bodenstein
@@ -93,6 +75,9 @@ struct RNNParam : public dmlc::Parameter<RNNParam> {
   float p, pkeep_;
   int seq_length_, batch_size_, input_size_;
   bool lstm_q_;  // whether type is lstm
+  bool cudnn_algo_verbose;
+  int32_t cudnn_algo;
+  dmlc::optional<bool> cudnn_tensor_core;
 
   DMLC_DECLARE_PARAMETER(RNNParam) {
     DMLC_DECLARE_FIELD(state_size)
@@ -117,6 +102,13 @@ struct RNNParam : public dmlc::Parameter<RNNParam> {
 
     DMLC_DECLARE_FIELD(state_outputs).set_default(false)
     .describe("Whether to have the states as symbol outputs.");
+    DMLC_DECLARE_FIELD(cudnn_algo_verbose).set_default(false)
+        .describe("Verboseness of algo selection. true = output selection, false = no output");
+    DMLC_DECLARE_FIELD(cudnn_algo).set_default(-1)
+        .describe("Specified RNN Algorithm.");
+    DMLC_DECLARE_FIELD(cudnn_tensor_core)
+        .set_default(dmlc::optional<bool>())
+        .describe("Allow Tensor Core math for the algos.");
   }
 };
 
@@ -153,7 +145,7 @@ class RNNOp : public Operator {
 };  // class RNNOp
 
 template<typename xpu>
-Operator* CreateOp(RNNParam param, int dtype);
+Operator* CreateOp(RNNParam param, int dtype, Context ctx);
 
 #if DMLC_USE_CXX11
 class RNNProp : public OperatorProperty {
@@ -256,7 +248,9 @@ class RNNProp : public OperatorProperty {
       if ((*in_type)[i] == -1) {
         (*in_type)[i] = dtype;
       } else {
-        UNIFORM_TYPE_CHECK((*in_type)[i], dtype, ListArguments()[i]);
+        CHECK_EQ((*in_type)[i], dtype) << "This layer requires uniform type. "
+                                       << "Expected " << dtype << " v.s. given "
+                                       << (*in_type)[i] << " at " << ListArguments()[i];
       }
     }
     out_type->clear();

@@ -12,7 +12,6 @@
 #include "./io.h"
 #include "./kvstore.h"
 #include "./export.h"
-#include "./im2rec.h"
 
 namespace mxnet {
 namespace R {
@@ -57,6 +56,4 @@ RCPP_MODULE(mxnet) {
   DataIterCreateFunction::InitRcppModule();
   KVStore::InitRcppModule();
   Exporter::InitRcppModule();
-  IM2REC::InitRcppModule();
 }
-
