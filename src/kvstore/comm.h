@@ -232,27 +232,44 @@ class CommDevice : public Comm {
       }
     }
 
+    // Reduce src on gpu 4~7 to gpu 4 first
+    auto& stage = stage_buf_[key];
+    std::vector<NDArray> reduce_s(src.size()/2);
+    CopyFromTo(src[4], &(stage.merged), priority);
+    reduce_s[0] = stage.merged;
+    if (stage.copy_buf.empty()) {
+      stage.copy_buf.resize(src.size()/2-1);
+      for (size_t i = src.size()/2; i < src.size()-1; ++i) {
+        stage.copy_buf[i%4] = NDArray(
+          stage.merged.shape(), stage.merged.ctx(), false, stage.merged.dtype());
+      }
+    }
+    for (size_t i = src.size()/2; i < src.size()-1; ++i) {
+      CopyFromTo(src[i+1], &(stage.copy_buf[i%4]), priority);
+      reduce_s[i%4+1] = stage.copy_buf[i%4];
+    }
+    ElementwiseSum(reduce_s, &stage.merged);
+
+    // Main reduce result on gpu 0 including the partial result from gpu 4
     auto& buf = merge_buf_[key];
-    std::vector<NDArray> reduce(src.size());
+    std::vector<NDArray> reduce(src.size()/2+1);
     CopyFromTo(src[0], &(buf.merged), priority);
     reduce[0] = buf.merged;
 
     if (buf.copy_buf.empty()) {
-      // TODO(mli) this results in large device memory usage for huge ndarray,
-      // such as the largest fullc in VGG. consider to do segment reduce with
-      // NDArray.Slice or gpu direct memory access. for the latter, we need to
-      // remove some ctx check, and also it reduces 20% perf
-      buf.copy_buf.resize(src.size()-1);
-      for (size_t i = 0; i < src.size()-1; ++i) {
+      buf.copy_buf.resize(src.size()/2);
+      for (size_t i = 0; i < src.size()/2; ++i) {
         buf.copy_buf[i] = NDArray(
           buf.merged.shape(), buf.merged.ctx(), false, buf.merged.dtype());
       }
     }
-    for (size_t i = 0; i < src.size()-1; ++i) {
+    for (size_t i = 0; i < src.size()/2-1; ++i) {
       CopyFromTo(src[i+1], &(buf.copy_buf[i]), priority);
       reduce[i+1] = buf.copy_buf[i];
     }
 
+    CopyFromTo(stage.merged, &(buf.copy_buf[src.size()/2-1]), priority);
+    reduce[src.size()/2] = buf.copy_buf[src.size()/2-1];
     ElementwiseSum(reduce, &buf.merged);
 
     return buf.merged;
@@ -271,9 +288,14 @@ class CommDevice : public Comm {
       }
     } else {
       auto& buf = merge_buf_[key];
+      auto& stage = stage_buf_[key];
       CopyFromTo(src, &buf.merged, priority);
-      for (auto d : dst) {
-        CopyFromTo(buf.merged, &d, priority);
+      CopyFromTo(src, &stage.merged, priority);
+      for (int i=0; i<4; i++) {
+        CopyFromTo(buf.merged, &dst[i], priority);
+      }
+      for (int i=4; i<dst.size(); i++) {
+        CopyFromTo(stage.merged, &dst[i], priority);
       }
     }
   }
@@ -328,27 +350,14 @@ class CommDevice : public Comm {
               const KeyAttrs& a, const KeyAttrs& b) {
       return std::get<1>(a).Size() > std::get<1>(b).Size();
     });
-
-    std::unordered_map<int, std::pair<Context, size_t>> ctx_info;
-    for (auto d : devs) {
-      ctx_info[d.dev_id] = std::make_pair(d, 0);
-    }
     for (size_t i = 0; i < sorted_key_attrs_.size(); ++i) {
       int key  = std::get<0>(sorted_key_attrs_[i]);
       TShape s = std::get<1>(sorted_key_attrs_[i]);
       int type = std::get<2>(sorted_key_attrs_[i]);
       auto& buf = merge_buf_[key];
-      Context ctx;
-      size_t min_size = std::numeric_limits<size_t>::max();
-      for (auto it = ctx_info.begin(); it != ctx_info.end(); ++it) {
-        size_t size = it->second.second;
-        if (size <= min_size) {
-          ctx = it->second.first;
-          min_size = size;
-        }
-      }
-      buf.merged = NDArray(s, ctx, false, type);
-      ctx_info[ctx.dev_id].second += s.Size();
+      auto& stage = stage_buf_[key];
+      buf.merged = NDArray(s, devs[0], false, type);
+      stage.merged = NDArray(s, devs[4], false, type);
     }
     inited_ = true;
   }
@@ -362,6 +371,8 @@ class CommDevice : public Comm {
     std::vector<NDArray> copy_buf;
   };
   std::unordered_map<int, BufferEntry> merge_buf_;
+  std::unordered_map<int, BufferEntry> stage_buf_;
+
   bool inited_;
 };
 
