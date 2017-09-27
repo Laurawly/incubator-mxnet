@@ -226,6 +226,10 @@ class CommDevice : public Comm {
       for (const auto& a : src) {
         devs.push_back(a.ctx());
       }
+      std::sort(devs.begin(), devs.end(), [](
+                const Context a, const Context b) {
+        return a.dev_id < b.dev_id;
+      });
       InitMergeBuffer(devs);
       if (dmlc::GetEnv("MXNET_ENABLE_GPU_P2P", 1)) {
         EnableP2P(devs);
@@ -235,8 +239,6 @@ class CommDevice : public Comm {
     // Reduce src on gpu 4~7 to gpu 4 first
     auto& stage = stage_buf_[key];
     std::vector<NDArray> reduce_s(src.size()/2);
-    CopyFromTo(src[4], &(stage.merged), priority);
-    reduce_s[0] = stage.merged;
     if (stage.copy_buf.empty()) {
       stage.copy_buf.resize(src.size()/2-1);
       for (size_t i = src.size()/2; i < src.size()-1; ++i) {
@@ -244,17 +246,22 @@ class CommDevice : public Comm {
           stage.merged.shape(), stage.merged.ctx(), false, stage.merged.dtype());
       }
     }
-    for (size_t i = src.size()/2; i < src.size()-1; ++i) {
-      CopyFromTo(src[i+1], &(stage.copy_buf[i%4]), priority);
-      reduce_s[i%4+1] = stage.copy_buf[i%4];
+    for (size_t i = 0; i < src.size(); ++i) {
+      int id = src[i].ctx().dev_id;
+      if (id == 4) {
+        CopyFromTo(src[i], &(stage.merged), priority);
+        reduce_s[0] = stage.merged;
+      }
+      else if (id > 4) {
+          CopyFromTo(src[i], &(stage.copy_buf[id-5]), priority);
+          reduce_s[id-4] = stage.copy_buf[id-5];
+      }
     }
     ElementwiseSum(reduce_s, &stage.merged);
 
     // Main reduce result on gpu 0 including the partial result from gpu 4
     auto& buf = merge_buf_[key];
     std::vector<NDArray> reduce(src.size()/2+1);
-    CopyFromTo(src[0], &(buf.merged), priority);
-    reduce[0] = buf.merged;
 
     if (buf.copy_buf.empty()) {
       buf.copy_buf.resize(src.size()/2);
@@ -263,9 +270,16 @@ class CommDevice : public Comm {
           buf.merged.shape(), buf.merged.ctx(), false, buf.merged.dtype());
       }
     }
-    for (size_t i = 0; i < src.size()/2-1; ++i) {
-      CopyFromTo(src[i+1], &(buf.copy_buf[i]), priority);
-      reduce[i+1] = buf.copy_buf[i];
+    for (size_t i = 0; i < src.size(); ++i) {
+      int id = src[i].ctx().dev_id;
+      if (id == 0) {
+        CopyFromTo(src[i], &(buf.merged), priority);
+        reduce[0] = buf.merged;
+      }
+      else if (id < 4) {
+          CopyFromTo(src[i], &(buf.copy_buf[id-1]), priority);
+          reduce[id] = buf.copy_buf[id-1];
+      }
     }
 
     CopyFromTo(stage.merged, &(buf.copy_buf[src.size()/2-1]), priority);
@@ -291,11 +305,11 @@ class CommDevice : public Comm {
       auto& stage = stage_buf_[key];
       CopyFromTo(src, &buf.merged, priority);
       CopyFromTo(src, &stage.merged, priority);
-      for (int i=0; i<4; i++) {
-        CopyFromTo(buf.merged, &dst[i], priority);
-      }
-      for (int i=4; i<dst.size(); i++) {
-        CopyFromTo(stage.merged, &dst[i], priority);
+      for (auto d : dst) {
+        if(d.ctx().dev_id < 4)
+            CopyFromTo(buf.merged, &d, priority);
+        else 
+            CopyFromTo(stage.merged, &d, priority);
       }
     }
   }
